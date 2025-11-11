@@ -52,6 +52,8 @@ static long last_device_change = -1;
 static Display *dpy;
 static int hiding = 0, legacy = 0, always_hide = 0, ignore_scroll = 0;
 static unsigned timeout = 0;
+static int jitter = 0;
+static int hide_x = 0, hide_y = 0;
 static unsigned char ignored;
 static XSyncCounter idler_counter = 0;
 static XSyncAlarm idle_alarm = None;
@@ -94,7 +96,7 @@ main(int argc, char *argv[])
 		{"all", -1},
 	};
 
-	while ((ch = getopt(argc, argv, "adi:m:t:s")) != -1)
+	while ((ch = getopt(argc, argv, "adi:j:m:t:s")) != -1)
 		switch (ch) {
 		case 'a':
 			always_hide = 1;
@@ -108,6 +110,9 @@ main(int argc, char *argv[])
 				if (strcasecmp(optarg, mods[i].name) == 0)
 					ignored |= mods[i].mask;
 
+			break;
+		case 'j':
+			jitter = strtoul(optarg, NULL, 0);
 			break;
 		case 'm':
 			if (strcmp(optarg, "nw") == 0)
@@ -302,7 +307,7 @@ hide_cursor(void)
 {
 	Window win;
 	XWindowAttributes attrs;
-	int x, y, h, w, junk;
+	int x = 0, y = 0, h, w, junk;
 	unsigned int ujunk;
 
 	DPRINTF(("keystroke, %shiding cursor\n", (hiding ? "already " : "")));
@@ -310,11 +315,11 @@ hide_cursor(void)
 	if (hiding)
 		return;
 
-	if (move) {
-		if (XQueryPointer(dpy, DefaultRootWindow(dpy),
-		    &win, &win, &x, &y, &junk, &junk, &ujunk)) {
-			move_x = x;
-			move_y = y;
+	if (XQueryPointer(dpy, DefaultRootWindow(dpy),
+	    &win, &win, &hide_x, &hide_y, &junk, &junk, &ujunk)) {
+		if (move) {
+			move_x = hide_x;
+			move_y = hide_y;
 
 			XGetWindowAttributes(dpy, win, &attrs);
 
@@ -362,20 +367,27 @@ hide_cursor(void)
 
 			XWarpPointer(dpy, None, DefaultRootWindow(dpy),
 			    0, 0, 0, 0, x, y);
-		} else {
-			move_x = -1;
-			move_y = -1;
-			warn("failed finding cursor coordinates");
 		}
+	} else if (move) {
+		move_x = -1;
+		move_y = -1;
+		warn("failed finding cursor coordinates");
 	}
 
 	XFixesHideCursor(dpy, DefaultRootWindow(dpy));
 	hiding = 1;
+
+	if (jitter)
+		system("xmodmap -e \"pointer = 0 0 0\"");
 }
 
 void
 show_cursor(void)
 {
+	Window win;
+	int cur_x, cur_y, junk;
+	unsigned int ujunk;
+
 	DPRINTF(("mouse moved, %sunhiding cursor\n",
 	    (hiding ? "" : "already ")));
 
@@ -387,9 +399,27 @@ show_cursor(void)
 	if (!hiding)
 		return;
 
+	if (jitter) {
+		if (!XQueryPointer(dpy, DefaultRootWindow(dpy),
+		    &win, &win, &cur_x, &cur_y, &junk, &junk, &ujunk)) {
+			warn("failed finding cursor coordinates");
+			return;
+		}
+
+		if ((abs(cur_x - hide_x) < jitter) &&
+		    (abs(cur_y - hide_y) < jitter)) {
+			DPRINTF(("not unhiding, cursor moved less than "
+			    "jitter %d\n", jitter));
+			return;
+		}
+	}
+
 	if (move && move_x != -1 && move_y != -1)
 		XWarpPointer(dpy, None, DefaultRootWindow(dpy), 0, 0, 0, 0,
 		    move_x, move_y);
+
+	if (jitter)
+		system("xmodmap -e \"pointer = default\"");
 
 	XFixesShowCursor(dpy, DefaultRootWindow(dpy));
 	hiding = 0;
@@ -587,7 +617,7 @@ set_alarm(XSyncAlarm *alarm, XSyncTestType test)
 void
 usage(char *progname)
 {
-	fprintf(stderr, "usage: %s [-a] [-d] [-i mod] [-m [w]nw|ne|sw|se|+/-xy] "
+	fprintf(stderr, "usage: %s [-a] [-d] [-i mod] [-j pixels] [-m [w]nw|ne|sw|se|+/-xy] "
 	    "[-t seconds] [-s]\n", progname);
 	exit(1);
 }

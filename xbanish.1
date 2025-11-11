@@ -9,6 +9,7 @@
 .Op Fl a
 .Op Fl d
 .Op Fl i Ar modifier
+.Op Fl j Ar pixels
 .Op Fl m Oo Ar w Oc Ns Ar nw|ne|sw|se|\(+-x\(+-y
 .Op Fl t Ar seconds
 .Op Fl s
@@ -49,6 +50,10 @@ Modifiers are:
 .Ic mod5
 (ISO Level 3 Shift), and
 .Ic all
+.It Fl j Ar pixels
+Only show the mouse cursor again if it has moved more than
+.Ar pixels
+from where it was hidden.
 .It Fl m Oo Ar w Oc Ns Ar nw|ne|sw|se|\(+-x\(+-y
 When hiding the mouse cursor, move it to this corner of the screen
 or current window, then move it back when showing the cursor.

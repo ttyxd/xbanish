@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <linux/input.h>
+#include <sys/inotify.h>
 
 #include <X11/X.h>
 #include <X11/Xlib.h>
@@ -185,7 +186,7 @@ main(int argc, char *argv[])
 
 	if (use_evdev) {
 		if (snoop_evdev() == 0)
-			errx(1, "no keyboard devices found with evdev. "
+			errx(1, "no keyboard or pointer devices found with evdev. "
 			    "Try without -E and see evasions issue #1.");
 	} else
 		snoop_root();
@@ -214,11 +215,20 @@ main(int argc, char *argv[])
 	}
 
 	if (use_evdev) {
+		int inotify_fd;
 		fd_set fds;
-		int x11_fd = ConnectionNumber(dpy);
-		int max_fd = x11_fd;
+		int max_fd;
 		struct timeval tv;
 		struct input_event ev;
+
+		inotify_fd = inotify_init1(IN_NONBLOCK);
+		if (inotify_fd < 0)
+			err(1, "inotify_init1 failed");
+
+		if (inotify_add_watch(inotify_fd, "/dev/input", IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM) < 0)
+			err(1, "inotify_add_watch failed");
+
+		max_fd = inotify_fd;
 
 		for (i = 0; i < num_keyboards; i++)
 			if (keyboard_fds[i] > max_fd)
@@ -229,7 +239,7 @@ main(int argc, char *argv[])
 
 		for (;;) {
 			FD_ZERO(&fds);
-			FD_SET(x11_fd, &fds);
+			FD_SET(inotify_fd, &fds);
 			for (i = 0; i < num_keyboards; i++)
 				FD_SET(keyboard_fds[i], &fds);
 			for (i = 0; i < num_mice; i++)
@@ -241,9 +251,29 @@ main(int argc, char *argv[])
 			if (select(max_fd + 1, &fds, NULL, NULL, &tv) == -1)
 				err(1, "select failed");
 
-			if (FD_ISSET(x11_fd, &fds))
-				while (XPending(dpy))
-					XNextEvent(dpy, &e);
+			if (FD_ISSET(inotify_fd, &fds)) {
+				DPRINTF(("evdev: inotify event, re-snooping\n"));
+				/* drain the inotify fd */
+				char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+				read(inotify_fd, buf, sizeof(buf));
+
+				for (i = 0; i < num_keyboards; i++)
+					close(keyboard_fds[i]);
+				for (i = 0; i < num_mice; i++)
+					close(mouse_fds[i]);
+
+				num_keyboards = 0;
+				num_mice = 0;
+				snoop_evdev();
+
+				max_fd = inotify_fd;
+				for (i = 0; i < num_keyboards; i++)
+					if (keyboard_fds[i] > max_fd)
+						max_fd = keyboard_fds[i];
+				for (i = 0; i < num_mice; i++)
+					if (mouse_fds[i] > max_fd)
+						max_fd = mouse_fds[i];
+			}
 
 			for (i = 0; i < num_keyboards; i++) {
 				if (FD_ISSET(keyboard_fds[i], &fds)) {
@@ -261,12 +291,12 @@ main(int argc, char *argv[])
 			for (i = 0; i < num_mice; i++) {
 				if (FD_ISSET(mouse_fds[i], &fds)) {
 					while(read(mouse_fds[i], &ev, sizeof(ev)) > 0) {
-						if (ev.type == EV_REL) {
-							DPRINTF(("evdev: mouse move\n"));
+						if (ev.type == EV_REL || ev.type == EV_ABS) {
+							DPRINTF(("evdev: pointer move\n"));
 							if (!always_hide)
 								show_cursor();
 						} else if (ev.type == EV_KEY && ev.value == 1) {
-							DPRINTF(("evdev: mouse button press\n"));
+							DPRINTF(("evdev: pointer button press\n"));
 							if (!always_hide)
 								show_cursor();
 						}
@@ -278,7 +308,6 @@ main(int argc, char *argv[])
 		for (;;) {
 			cookie = &e.xcookie;
 			XNextEvent(dpy, &e);
-
 			int etype = e.type;
 			if (e.type == motion_type)
 				etype = MotionNotify;
@@ -395,7 +424,6 @@ main(int argc, char *argv[])
 		}
 	}
 }
-
 void
 hide_cursor(void)
 {
@@ -469,6 +497,7 @@ hide_cursor(void)
 	}
 
 	XFixesHideCursor(dpy, DefaultRootWindow(dpy));
+	XFlush(dpy);
 	hiding = 1;
 
 	if (jitter)
@@ -518,6 +547,7 @@ show_cursor(void)
 		system("xmodmap -e \"pointer = default\"");
 
 	XFixesShowCursor(dpy, DefaultRootWindow(dpy));
+	XFlush(dpy);
 	hiding = 0;
 }
 
@@ -581,7 +611,7 @@ snoop_evdev(void)
 				}
 			}
 
-			if (test_bit(EV_REL, ev_bits) && num_mice < MAX_INPUT_DEVICES) {
+			if ((test_bit(EV_REL, ev_bits) || test_bit(EV_ABS, ev_bits)) && num_mice < MAX_INPUT_DEVICES) {
 				memset(key_bits, 0, sizeof(key_bits));
 				if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0) {
 					warn("can't get key bits for %s", path);
@@ -589,8 +619,8 @@ snoop_evdev(void)
 					continue;
 				}
 
-				if (test_bit(BTN_MOUSE, key_bits)) {
-					DPRINTF(("found mouse: %s\n", path));
+				if (test_bit(BTN_MOUSE, key_bits) || test_bit(BTN_TOUCH, key_bits)) {
+					DPRINTF(("found pointer: %s\n", path));
 					mouse_fds[num_mice++] = fd;
 					continue;
 				}

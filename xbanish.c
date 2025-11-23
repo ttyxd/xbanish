@@ -398,6 +398,10 @@ main(int argc, char *argv[])
 				case XI_RawButtonRelease:
 					break;
 
+				case XI_HierarchyChanged:
+					snoop_root();
+					break;
+
 				default:
 					DPRINTF(("unknown XI event type %d\n",
 					    xie->evtype));
@@ -676,6 +680,7 @@ snoop_xinput(Window win)
 
 		XISetMask(mask, XI_RawMotion);
 		XISetMask(mask, XI_RawButtonPress);
+		XISetMask(mask, XI_HierarchyChanged);
 		evmasks[0].deviceid = XIAllMasterDevices;
 		evmasks[0].mask_len = sizeof(mask);
 		evmasks[0].mask = mask;

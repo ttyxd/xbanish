@@ -1,15 +1,14 @@
-## xbanish (Fork)
-this fork aims to add a jitter option, such that the mouse has to move a certain 
-distance before appearing again.
+## betterbanish
 
-xbanish hides the mouse cursor when you start typing, and shows it again when
+`betterbanish` is a fork of the original `xbanish` that aims to improve on the original by making kernel events mode the default for detecting input. This means you no longer need to specify the `-E` flag.
+
+`betterbanish` hides the mouse cursor when you start typing, and shows it again when
 the mouse cursor moves or a mouse button is pressed.
-This is similar to xterm's `pointerMode` setting, but xbanish works globally in
+This is similar to xterm's `pointerMode` setting, but `betterbanish` works globally in
 the X11 session.
 
 unclutter's -keystroke mode is supposed to do this, but it's
 [broken](https://bugs.launchpad.net/ubuntu/+source/unclutter/+bug/54148).
-I looked into fixing it, but unclutter was abandoned so I wrote xbanish.
 
 The name comes from
 [ratpoison's](https://www.nongnu.org/ratpoison/)
@@ -17,29 +16,25 @@ The name comes from
 
 ### Implementation
 
-If the XInput extension is supported, xbanish uses it to request input from all
-attached keyboards and mice.
-If XInput 2.2 is supported, raw mouse movement and button press inputs are
-requested which helps detect cursor movement while in certain applications such
-as Chromium.
+`betterbanish` works by listening for keyboard and mouse events directly from the kernel's `evdev` interface (`/dev/input/event*`). This makes it independent of the X server's input handling and avoids the need for the XTest extension.
 
-If Xinput is not available, xbanish recurses through the list of windows
-starting at the root, and calls `XSelectInput()` on each window to receive
-notification of mouse motion, button presses, and key presses.
+When a key is pressed, the cursor is hidden using the `XFixes` extension. When the mouse is moved or a button is pressed, the cursor is shown again.
 
-In response to any available keyboard input events, the cursor is hidden.
-On mouse movement or button events, the cursor is shown.
+`betterbanish` also uses `inotify` to monitor the `/dev/input` directory for new devices, so it will automatically detect and use newly connected keyboards and mice.
 
-xbanish initially hid the cursor by calling `XGrabPointer()` with a blank
-cursor image, similar to unclutter's -grab mode, but this had problematic
-interactions with certain X applications.
-For example, xlock could not grab the pointer and sometimes didn't lock,
-xwininfo wouldn't work at all, Firefox would quickly hide the Awesome Bar
-dropdown as soon as a key was pressed, and xterm required two middle-clicks to
-paste the clipboard contents.
+### Usage
 
-To avoid these problems and simplify the implementation, xbanish now uses the
-modern
-[`Xfixes` extension](http://cgit.freedesktop.org/xorg/proto/fixesproto/plain/fixesproto.txt)
-to easily hide and show the cursor with `XFixesHideCursor()` and
-`XFixesShowCursor()`.
+```
+usage: betterbanish [-a] [-c count] [-d] [-i mod] [-j pixels] [-m [w]nw|ne|sw|se|+/-xy] [-t seconds] [-s]
+```
+
+### Options
+
+*   `-a`: Always keep mouse cursor hidden while `betterbanish` is running.
+*   `-c count`: Hide the cursor after `count` keystrokes.
+*   `-d`: Print debugging messages to stdout.
+*   `-i mod`: Ignore pressed key if `mod` is used. Modifiers are: `shift`, `lock` (CapsLock), `control`, `mod1` (Alt or Meta), `mod2` (NumLock), `mod3` (Hyper), `mod4` (Super, Windows, or Command), `mod5` (ISO Level 3 Shift), and `all`.
+*   `-j pixels`: Only show the mouse cursor again if it has moved more than `pixels` from where it was hidden.
+*   `-m [w]nw|ne|sw|se|+/-xy`: When hiding the mouse cursor, move it to this corner of the screen or current window, then move it back when showing the cursor. Also accepts absolute positioning, for example `+50-100` will be positioned 50 pixels from the left and 100 pixels from the bottom.
+*   `-t seconds`: Hide the mouse cursor after `seconds` have passed without mouse movement.
+*   `-s`: Ignore scrolling events.

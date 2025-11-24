@@ -37,9 +37,6 @@
 
 void hide_cursor(void);
 void show_cursor(void);
-void snoop_root(void);
-int snoop_xinput(Window);
-void snoop_legacy(Window);
 int snoop_evdev(void);
 void set_alarm(XSyncAlarm *, XSyncTestType);
 void usage(char *);
@@ -47,17 +44,10 @@ int swallow_error(Display *, XErrorEvent *);
 int parse_geometry(const char *s);
 int test_bit(int bit, unsigned long *array);
 
-/* xinput event type ids to be filled in later */
-static int button_press_type = -1;
-static int button_release_type = -1;
-static int key_press_type = -1;
-static int key_release_type = -1;
-static int motion_type = -1;
-static int device_change_type = -1;
-static long last_device_change = -1;
+
 
 static Display *dpy;
-static int hiding = 0, legacy = 0, always_hide = 0, ignore_scroll = 0, keystroke_count = 1, current_keystrokes = 0;
+static int hiding = 0, always_hide = 0, ignore_scroll = 0, keystroke_count = 1, current_keystrokes = 0;
 static unsigned timeout = 0;
 static int jitter = 0;
 static int hide_x = 0, hide_y = 0;
@@ -69,7 +59,6 @@ static int debug = 0;
 #define DPRINTF(x) { if (debug) { printf x; } };
 
 #define MAX_INPUT_DEVICES 16
-static int use_evdev = 0;
 static int keyboard_fds[MAX_INPUT_DEVICES];
 static int num_keyboards = 0;
 static int mouse_fds[MAX_INPUT_DEVICES];
@@ -110,7 +99,7 @@ main(int argc, char *argv[])
 		{"all", -1},
 	};
 
-	while ((ch = getopt(argc, argv, "ac:di:j:m:t:sE")) != -1)
+	while ((ch = getopt(argc, argv, "ac:di:j:m:t:s")) != -1)
 		switch (ch) {
 		case 'a':
 			always_hide = 1;
@@ -120,9 +109,6 @@ main(int argc, char *argv[])
 			break;
 		case 'd':
 			debug = 1;
-			break;
-		case 'E':
-			use_evdev = 1;
 			break;
 		case 'i':
 			for (i = 0;
@@ -184,12 +170,9 @@ main(int argc, char *argv[])
 
 	XSetErrorHandler(swallow_error);
 
-	if (use_evdev) {
-		if (snoop_evdev() == 0)
-			errx(1, "no keyboard or pointer devices found with evdev. "
-			    "Try without -E and see evasions issue #1.");
-	} else
-		snoop_root();
+	if (snoop_evdev() == 0)
+		errx(1, "no keyboard or pointer devices found with evdev. "
+		    "Try without -E and see evasions issue #1.");
 
 	if (always_hide)
 		hide_cursor();
@@ -214,215 +197,91 @@ main(int argc, char *argv[])
 			errx(1, "no idle counter");
 	}
 
-	if (use_evdev) {
-		int inotify_fd;
-		fd_set fds;
-		int max_fd;
-		struct timeval tv;
-		struct input_event ev;
+	int inotify_fd;
+	fd_set fds;
+	int max_fd;
+	struct timeval tv;
+	struct input_event ev;
 
-		inotify_fd = inotify_init1(IN_NONBLOCK);
-		if (inotify_fd < 0)
-			err(1, "inotify_init1 failed");
+	inotify_fd = inotify_init1(IN_NONBLOCK);
+	if (inotify_fd < 0)
+		err(1, "inotify_init1 failed");
 
-		if (inotify_add_watch(inotify_fd, "/dev/input", IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM) < 0)
-			err(1, "inotify_add_watch failed");
+	if (inotify_add_watch(inotify_fd, "/dev/input", IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM) < 0)
+		err(1, "inotify_add_watch failed");
 
-		max_fd = inotify_fd;
+	max_fd = inotify_fd;
 
+	for (i = 0; i < num_keyboards; i++)
+		if (keyboard_fds[i] > max_fd)
+			max_fd = keyboard_fds[i];
+	for (i = 0; i < num_mice; i++)
+		if (mouse_fds[i] > max_fd)
+			max_fd = mouse_fds[i];
+
+	for (;;) {
+		FD_ZERO(&fds);
+		FD_SET(inotify_fd, &fds);
 		for (i = 0; i < num_keyboards; i++)
-			if (keyboard_fds[i] > max_fd)
-				max_fd = keyboard_fds[i];
+			FD_SET(keyboard_fds[i], &fds);
 		for (i = 0; i < num_mice; i++)
-			if (mouse_fds[i] > max_fd)
-				max_fd = mouse_fds[i];
+			FD_SET(mouse_fds[i], &fds);
 
-		for (;;) {
-			FD_ZERO(&fds);
-			FD_SET(inotify_fd, &fds);
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+
+		if (select(max_fd + 1, &fds, NULL, NULL, &tv) == -1)
+			err(1, "select failed");
+
+		if (FD_ISSET(inotify_fd, &fds)) {
+			DPRINTF(("evdev: inotify event, re-snooping\n"));
+			/* drain the inotify fd */
+			char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+			read(inotify_fd, buf, sizeof(buf));
+
 			for (i = 0; i < num_keyboards; i++)
-				FD_SET(keyboard_fds[i], &fds);
+				close(keyboard_fds[i]);
 			for (i = 0; i < num_mice; i++)
-				FD_SET(mouse_fds[i], &fds);
+				close(mouse_fds[i]);
 
-			tv.tv_sec = 1;
-			tv.tv_usec = 0;
+			num_keyboards = 0;
+			num_mice = 0;
+			snoop_evdev();
 
-			if (select(max_fd + 1, &fds, NULL, NULL, &tv) == -1)
-				err(1, "select failed");
+			max_fd = inotify_fd;
+			for (i = 0; i < num_keyboards; i++)
+				if (keyboard_fds[i] > max_fd)
+					max_fd = keyboard_fds[i];
+			for (i = 0; i < num_mice; i++)
+				if (mouse_fds[i] > max_fd)
+					max_fd = mouse_fds[i];
+		}
 
-			if (FD_ISSET(inotify_fd, &fds)) {
-				DPRINTF(("evdev: inotify event, re-snooping\n"));
-				/* drain the inotify fd */
-				char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
-				read(inotify_fd, buf, sizeof(buf));
-
-				for (i = 0; i < num_keyboards; i++)
-					close(keyboard_fds[i]);
-				for (i = 0; i < num_mice; i++)
-					close(mouse_fds[i]);
-
-				num_keyboards = 0;
-				num_mice = 0;
-				snoop_evdev();
-
-				max_fd = inotify_fd;
-				for (i = 0; i < num_keyboards; i++)
-					if (keyboard_fds[i] > max_fd)
-						max_fd = keyboard_fds[i];
-				for (i = 0; i < num_mice; i++)
-					if (mouse_fds[i] > max_fd)
-						max_fd = mouse_fds[i];
-			}
-
-			for (i = 0; i < num_keyboards; i++) {
-				if (FD_ISSET(keyboard_fds[i], &fds)) {
-					while(read(keyboard_fds[i], &ev, sizeof(ev)) > 0) {
-						if (ev.type == EV_KEY && ev.value == 1) {
-							DPRINTF(("evdev: key press\n"));
-							current_keystrokes++;
-							if (current_keystrokes >= keystroke_count)
-								hide_cursor();
-						}
-					}
-				}
-			}
-
-			for (i = 0; i < num_mice; i++) {
-				if (FD_ISSET(mouse_fds[i], &fds)) {
-					while(read(mouse_fds[i], &ev, sizeof(ev)) > 0) {
-						if (ev.type == EV_REL || ev.type == EV_ABS) {
-							DPRINTF(("evdev: pointer move\n"));
-							if (!always_hide)
-								show_cursor();
-						} else if (ev.type == EV_KEY && ev.value == 1) {
-							DPRINTF(("evdev: pointer button press\n"));
-							if (!always_hide)
-								show_cursor();
-						}
+		for (i = 0; i < num_keyboards; i++) {
+			if (FD_ISSET(keyboard_fds[i], &fds)) {
+				while(read(keyboard_fds[i], &ev, sizeof(ev)) > 0) {
+					if (ev.type == EV_KEY && ev.value == 1) {
+						DPRINTF(("evdev: key press\n"));
+						current_keystrokes++;
+						if (current_keystrokes >= keystroke_count)
+							hide_cursor();
 					}
 				}
 			}
 		}
-	} else {
-		for (;;) {
-			cookie = &e.xcookie;
-			XNextEvent(dpy, &e);
-			int etype = e.type;
-			if (e.type == motion_type)
-				etype = MotionNotify;
-			else if (e.type == key_press_type ||
-			    e.type == key_release_type)
-				etype = KeyRelease;
-			else if (e.type == button_press_type ||
-			    e.type == button_release_type)
-				etype = ButtonRelease;
-			else if (e.type == device_change_type) {
-				XDevicePresenceNotifyEvent *xdpe =
-				    (XDevicePresenceNotifyEvent *)&e;
-				if (last_device_change == xdpe->serial)
-					continue;
-				snoop_root();
-				last_device_change = xdpe->serial;
-				continue;
-			}
 
-			switch (etype) {
-			case KeyRelease:
-				if (ignored) {
-					unsigned int state = 0;
-
-					/* masks are only set on key release, if
-					 * ignore is set we must throw out non-release
-					 * events here */
-					if (e.type == key_press_type) {
-						break;
+		for (i = 0; i < num_mice; i++) {
+			if (FD_ISSET(mouse_fds[i], &fds)) {
+				while(read(mouse_fds[i], &ev, sizeof(ev)) > 0) {
+					if (ev.type == EV_REL || ev.type == EV_ABS) {
+						DPRINTF(("evdev: pointer move\n"));
+						if (!always_hide)
+							show_cursor();
+					} else if (ev.type == EV_KEY && ev.value == 1) {
+						DPRINTF(("evdev: pointer button press\n"));
+						if (!always_hide)
+							show_cursor();
 					}
-
-					/* extract modifier state */
-					if (e.type == key_release_type) {
-						/* xinput device event */
-						XDeviceKeyEvent *key =
-						    (XDeviceKeyEvent *) &e;
-						state = key->state;
-					} else if (e.type == KeyRelease) {
-						/* legacy event */
-						state = e.xkey.state;
-					}
-
-					if (state & ignored) {
-						DPRINTF(("ignoring key %d\n", state));
-						break;
-					}
-				}
-
-				if (e.type == key_release_type || e.type == KeyRelease) {
-					current_keystrokes++;
-					if (current_keystrokes >= keystroke_count)
-						hide_cursor();
-				}
-				break;
-
-			case ButtonRelease:
-			case MotionNotify:
-				if (!always_hide)
-					show_cursor();
-				break;
-
-			case CreateNotify:
-				if (legacy) {
-					DPRINTF(("new window, snooping on it\n"));
-
-					/* not sure why snooping directly on the window
-					 * doesn't work, so snoop on all windows from
-					 * its parent (probably root) */
-					snoop_legacy(e.xcreatewindow.parent);
-				}
-				break;
-
-			case GenericEvent:
-				/* xi2 raw event */
-				XGetEventData(dpy, cookie);
-				XIDeviceEvent *xie = (XIDeviceEvent *)cookie->data;
-
-				switch (xie->evtype) {
-				case XI_RawMotion:
-				case XI_RawButtonPress:
-					if (ignore_scroll && ((xie->detail >= 4 && xie->detail <= 7) ||
-							xie->event_x == xie->event_y))
-						break;
-					if (!always_hide)
-						show_cursor();
-					break;
-
-				case XI_RawButtonRelease:
-					break;
-
-				case XI_HierarchyChanged:
-					snoop_root();
-					break;
-
-				default:
-					DPRINTF(("unknown XI event type %d\n",
-					    xie->evtype));
-				}
-
-				XFreeEventData(dpy, cookie);
-				break;
-
-			default:
-				if (!timeout ||
-				    e.type != (sync_event + XSyncAlarmNotify)) {
-					DPRINTF(("unknown event type %d\n", e.type));
-					break;
-				}
-
-				alarm_e = (XSyncAlarmNotifyEvent *)&e;
-				if (alarm_e->alarm == idle_alarm) {
-					DPRINTF(("idle counter reached %dms, hiding "
-					    "cursor\n",
-					    XSyncValueLow32(alarm_e->counter_value)));
-					hide_cursor();
 				}
 			}
 		}
@@ -638,171 +497,7 @@ snoop_evdev(void)
 	return num_keyboards + num_mice;
 }
 
-void
-snoop_root(void)
-{
-	if (snoop_xinput(DefaultRootWindow(dpy)) == 0) {
-		DPRINTF(("no XInput devices found, using legacy snooping"));
-		legacy = 1;
-		snoop_legacy(DefaultRootWindow(dpy));
-	}
-}
 
-int
-snoop_xinput(Window win)
-{
-	int opcode, event, error, numdevs, i, j;
-	int major, minor, rc, rawmotion = 0;
-	int ev = 0;
-	unsigned char mask[(XI_LASTEVENT + 7)/8];
-	XDeviceInfo *devinfo = NULL;
-	XInputClassInfo *ici;
-	XDevice *device;
-	XIEventMask evmasks[1];
-	XEventClass class_presence;
-
-	if (!XQueryExtension(dpy, "XInputExtension", &opcode, &event, &error)) {
-		DPRINTF(("XInput extension not available"));
-		return 0;
-	}
-
-	/*
-	 * If we support xinput 2, use that for raw motion and button events to
-	 * get pointer data when the cursor is over a Chromium window.  We
-	 * could also use this to get raw key input and avoid the other XInput
-	 * stuff, but we may need to be able to examine the key value later to
-	 * filter out ignored keys.
-	 */
-	major = minor = 2;
-	rc = XIQueryVersion(dpy, &major, &minor);
-	if (rc != BadRequest) {
-		memset(mask, 0, sizeof(mask));
-
-		XISetMask(mask, XI_RawMotion);
-		XISetMask(mask, XI_RawButtonPress);
-		XISetMask(mask, XI_HierarchyChanged);
-		evmasks[0].deviceid = XIAllMasterDevices;
-		evmasks[0].mask_len = sizeof(mask);
-		evmasks[0].mask = mask;
-
-		XISelectEvents(dpy, win, evmasks, 1);
-		XFlush(dpy);
-
-		rawmotion = 1;
-
-		DPRINTF(("using xinput2 raw motion events\n"));
-	}
-
-	devinfo = XListInputDevices(dpy, &numdevs);
-	XEventClass event_list[numdevs * 2];
-	for (i = 0; i < numdevs; i++) {
-		if (devinfo[i].use != IsXExtensionKeyboard &&
-		    devinfo[i].use != IsXExtensionPointer)
-			continue;
-
-		if (!(device = XOpenDevice(dpy, devinfo[i].id)))
-			break;
-
-		for (ici = device->classes, j = 0; j < devinfo[i].num_classes;
-		ici++, j++) {
-			switch (ici->input_class) {
-			case KeyClass:
-				DPRINTF(("attaching to keyboard device %s "
-				    "(use %d)\n", devinfo[i].name,
-				    devinfo[i].use));
-
-				DeviceKeyPress(device, key_press_type,
-				    event_list[ev]); ev++;
-				DeviceKeyRelease(device, key_release_type,
-				    event_list[ev]); ev++;
-				break;
-
-			case ButtonClass:
-				if (rawmotion)
-					continue;
-
-				DPRINTF(("attaching to buttoned device %s "
-				    "(use %d)\n", devinfo[i].name,
-				    devinfo[i].use));
-
-				DeviceButtonPress(device, button_press_type,
-				    event_list[ev]); ev++;
-				DeviceButtonRelease(device,
-				    button_release_type, event_list[ev]); ev++;
-				break;
-
-			case ValuatorClass:
-				if (rawmotion)
-					continue;
-
-				DPRINTF(("attaching to pointing device %s "
-				    "(use %d)\n", devinfo[i].name,
-				    devinfo[i].use));
-
-				DeviceMotionNotify(device, motion_type,
-				    event_list[ev]); ev++;
-				break;
-			}
-		}
-
-		XCloseDevice(dpy, device);
-
-		if (XSelectExtensionEvent(dpy, win, event_list, ev)) {
-			warn("error selecting extension events");
-			ev = 0;
-			goto done;
-		}
-	}
-
-	DevicePresence(dpy, device_change_type, class_presence);
-	if (XSelectExtensionEvent(dpy, win, &class_presence, 1)) {
-		warn("error selecting extension events");
-		ev = 0;
-		goto done;
-	}
-
-done:
-	if (devinfo != NULL)
-	   XFreeDeviceList(devinfo);
-
-	return ev;
-}
-
-void
-snoop_legacy(Window win)
-{
-	Window parent, root, *kids = NULL;
-	XSetWindowAttributes sattrs;
-	unsigned int nkids = 0, i;
-
-	/*
-	 * Firefox stops responding to keys when KeyPressMask is used, so
-	 * settle for KeyReleaseMask
-	 */
-	int type = PointerMotionMask | KeyReleaseMask | Button1MotionMask |
-		Button2MotionMask | Button3MotionMask | Button4MotionMask |
-		Button5MotionMask | ButtonMotionMask;
-
-	if (XQueryTree(dpy, win, &root, &parent, &kids, &nkids) == 0) {
-		warn("can't query window tree\n");
-		goto done;
-	}
-
-	XSelectInput(dpy, root, type);
-
-	/* listen for newly mapped windows */
-	sattrs.event_mask = SubstructureNotifyMask;
-	XChangeWindowAttributes(dpy, root, CWEventMask, &sattrs);
-
-	for (i = 0; i < nkids; i++) {
-		XSelectInput(dpy, kids[i], type);
-		snoop_legacy(kids[i]);
-	}
-
-done:
-	if (kids != NULL)
-		XFree(kids); /* hide yo kids */
-}
 
 void
 set_alarm(XSyncAlarm *alarm, XSyncTestType test)
@@ -831,7 +526,7 @@ set_alarm(XSyncAlarm *alarm, XSyncTestType test)
 void
 usage(char *progname)
 {
-	fprintf(stderr, "usage: %s [-a] [-c count] [-d] [-E] [-i mod] [-j pixels] "
+	fprintf(stderr, "usage: %s [-a] [-c count] [-d] [-i mod] [-j pixels] "
 	    "[-m [w]nw|ne|sw|se|+/-xy] [-t seconds] [-s]\n", progname);
 	exit(1);
 }

@@ -15,8 +15,8 @@ LIBS	?= x11 xfixes xi xext
 INCLUDES?= `pkg-config --cflags $(LIBS)`
 LDFLAGS	+= `pkg-config --libs $(LIBS)`
 
-PROG	= xbanish
-OBJS	= xbanish.o
+PROG	= betterbanish
+OBJS	= betterbanish.o
 
 all: $(PROG)
 
@@ -30,7 +30,7 @@ install: all
 	mkdir -p $(DESTDIR)$(BINDIR)
 	$(INSTALL_PROGRAM) $(PROG) $(DESTDIR)$(BINDIR)
 	mkdir -p $(DESTDIR)$(MANDIR)
-	$(INSTALL_DATA) -m 644 xbanish.1 $(DESTDIR)$(MANDIR)/xbanish.1
+	$(INSTALL_DATA) -m 644 betterbanish.1 $(DESTDIR)$(MANDIR)/betterbanish.1
 
 clean:
 	rm -f $(PROG) $(OBJS)

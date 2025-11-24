@@ -1,12 +1,13 @@
-.Dd $Mdocdate: March 13 2020$
-.Dt XBANISH 1
+.Dd $Mdocdate: November 24 2025$
+.Dt BETTERBANISH 1
 .Os
 .Sh NAME
-.Nm xbanish
+.Nm betterbanish
 .Nd hide the X11 mouse cursor when a key is pressed
 .Sh SYNOPSIS
 .Nm
 .Op Fl a
+.Op Fl c Ar count
 .Op Fl d
 .Op Fl i Ar modifier
 .Op Fl j Ar pixels
@@ -28,6 +29,10 @@ but the effect is global in the X11 session.
 Always keep mouse cursor hidden while
 .Nm
 is running.
+.It Fl c Ar count
+Hide the cursor after
+.Ar count
+keystrokes.
 .It Fl d
 Print debugging messages to stdout.
 .It Fl i Ar modifier
@@ -57,7 +62,7 @@ from where it was hidden.
 .It Fl m Oo Ar w Oc Ns Ar nw|ne|sw|se|\(+-x\(+-y
 When hiding the mouse cursor, move it to this corner of the screen
 or current window, then move it back when showing the cursor.
-Also accepts absolute positioning, for example `+50-100' will be
+Also accepts absolute positioning, for example `+50-100` will be
 positioned 50 pixels from the left and 100 pixels from the bottom.
 See GEOMETRY SPECIFICATIONS of X(7) for more info.
 .It Fl t Ar seconds
@@ -72,5 +77,9 @@ Ignore scrolling events.
 .Xr X 7
 .Sh AUTHORS
 .Nm
-was written by
-.An joshua stein Aq Mt jcs@jcs.org .
+was forked from
+.An xbanish
+by joshua stein Aq Mt jcs@jcs.org .
+The fork
+.Nm
+is maintained by the community.

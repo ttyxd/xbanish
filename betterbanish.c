@@ -27,6 +27,8 @@
 #include <linux/input.h>
 #include <libudev.h>
 
+#include <sys/wait.h>
+
 #include <X11/X.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/sync.h>
@@ -35,6 +37,8 @@
 #include <X11/extensions/XInput2.h>
 #include <X11/Xutil.h>
 
+void get_mod_map(void);
+void free_mod_map(void);
 void hide_cursor(void);
 void show_cursor(void);
 int snoop_evdev(void);
@@ -43,6 +47,17 @@ void usage(char *);
 int swallow_error(Display *, XErrorEvent *);
 int parse_geometry(const char *s);
 int test_bit(int bit, unsigned long *array);
+
+struct mod_map_entry {
+	char *name;
+	int mask;
+	KeyCode *keycodes;
+	int keycode_count;
+};
+
+static struct mod_map_entry *mod_map;
+static int mod_map_count = 0;
+
 
 
 
@@ -279,6 +294,9 @@ main(int argc, char *argv[])
 	if (!(dpy = XOpenDisplay(NULL)))
 		errx(1, "can't open display %s", XDisplayName(NULL));
 
+	get_mod_map();
+	atexit(free_mod_map);
+
 #ifdef __OpenBSD__
 	if (pledge("stdio rpath wpath cpath proc exec", NULL) == -1)
 		err(1, "pledge");
@@ -393,9 +411,32 @@ main(int argc, char *argv[])
 				while(read(keyboard_fds[i], &ev, sizeof(ev)) > 0) {
 					if (ev.type == EV_KEY && ev.value == 1) {
 						DPRINTF(("evdev: key press\n"));
-						current_keystrokes++;
-						if (current_keystrokes >= keystroke_count)
-							hide_cursor();
+
+						char keys_return[32];
+						XQueryKeymap(dpy, keys_return);
+
+						int ignore_keystroke = 0;
+						int j, k;
+
+						for (j = 0; j < mod_map_count; j++) {
+							if (mod_map[j].mask & ignored) {
+								for (k = 0; k < mod_map[j].keycode_count; k++) {
+									KeyCode keycode = mod_map[j].keycodes[k];
+									if ((keys_return[keycode >> 3] >> (keycode & 7)) & 1) {
+										ignore_keystroke = 1;
+										break;
+									}
+								}
+							}
+							if (ignore_keystroke)
+								break;
+						}
+
+						if (!ignore_keystroke) {
+							current_keystrokes++;
+							if (current_keystrokes >= keystroke_count)
+								hide_cursor();
+						}
 					}
 				}
 			}
@@ -638,3 +679,46 @@ parse_geometry(const char *s)
 	}
 	return 0;
 }
+
+void
+free_mod_map(void)
+{
+	if (mod_map) {
+		for (int i = 0; i < mod_map_count; i++) {
+			free(mod_map[i].name);
+			free(mod_map[i].keycodes);
+		}
+		free(mod_map);
+	}
+}
+
+void
+get_mod_map(void)
+{
+	XModifierKeymap *modmap = XGetModifierMapping(dpy);
+	int i, j;
+
+	mod_map_count = 8;
+	mod_map = calloc(mod_map_count, sizeof(struct mod_map_entry));
+
+	char *mod_names[] = { "shift", "lock", "control", "mod1", "mod2", "mod3", "mod4", "mod5" };
+	int mod_masks[] = { ShiftMask, LockMask, ControlMask, Mod1Mask, Mod2Mask, Mod3Mask, Mod4Mask, Mod5Mask };
+
+	for (i = 0; i < mod_map_count; i++) {
+		mod_map[i].name = strdup(mod_names[i]);
+		mod_map[i].mask = mod_masks[i];
+		mod_map[i].keycode_count = 0;
+		mod_map[i].keycodes = NULL;
+
+		for (j = 0; j < modmap->max_keypermod; j++) {
+			if (modmap->modifiermap[i * modmap->max_keypermod + j] != 0) {
+				mod_map[i].keycode_count++;
+				mod_map[i].keycodes = realloc(mod_map[i].keycodes, mod_map[i].keycode_count * sizeof(KeyCode));
+				mod_map[i].keycodes[mod_map[i].keycode_count - 1] = modmap->modifiermap[i * modmap->max_keypermod + j];
+			}
+		}
+	}
+
+	XFreeModifiermap(modmap);
+}
+
